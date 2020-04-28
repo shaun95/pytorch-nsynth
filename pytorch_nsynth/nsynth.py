@@ -13,7 +13,8 @@ import json
 import glob
 import numpy as np
 
-import torchaudio
+import torch
+import librosa
 import torch.utils.data as data
 from torchvision import transforms
 from sklearn.preprocessing import LabelEncoder
@@ -40,11 +41,11 @@ class NSynth(data.Dataset):
     """
     def __init__(self, audio_directory_paths: Union[Iterable[str], str],
                  json_data_path: str,
-                 transform=None, target_transform=None,
+                 transform=None,
+                 target_transform=None,
                  blacklist_pattern=[],
                  categorical_field_list=["instrument_family"],
                  valid_pitch_range: Optional[Tuple[int, int]] = None,
-                 convert_to_float: bool = True,
                  squeeze_mono_channel: bool = True,
                  return_full_metadata: bool = True,
                  label_encode_categorical_data: bool = True):
@@ -91,14 +92,14 @@ class NSynth(data.Dataset):
 
         self.squeeze_mono_channel = squeeze_mono_channel
         self.transform = transform or transforms.Lambda(lambda x: x)
-        self.convert_to_float = convert_to_float
-        if self.convert_to_float:
-            # audio samples are loaded as an int16 numpy array
-            # rescale intensity range as float [-1, 1]
-            toFloat = transforms.Lambda(lambda x: (
-                x / np.iinfo(np.int16).max))
-            self.transform = transforms.Compose([toFloat,
-                                                 self.transform])
+        # self.convert_to_float = convert_to_float
+        # if self.convert_to_float:
+        #     # audio samples are loaded as an int16 numpy array
+        #     # rescale intensity range as float [-1, 1]
+        #     toFloat = transforms.Lambda(lambda x: (
+        #         x / np.iinfo(np.int16).max))
+        #     self.transform = transforms.Compose([toFloat,
+        #                                          self.transform])
         self.target_transform = target_transform
         self.return_full_metadata = return_full_metadata
 
@@ -144,9 +145,10 @@ class NSynth(data.Dataset):
             tuple: (audio sample, *categorical targets, json_data)
         """
         name = self.filenames[index]
-        sample, sample_rate = torchaudio.load_wav(name, channels_first=True)
-        if self.squeeze_mono_channel:
-            sample = sample.squeeze(0)
+        sample, sample_rate = librosa.load(name, sr=16000, mono=True)
+        sample = torch.as_tensor(sample)
+        if not self.squeeze_mono_channel:
+            sample = sample.unsqueeze(0)
 
         metadata = self._get_metadata(name)
         if self.label_encode_categorical_data:
