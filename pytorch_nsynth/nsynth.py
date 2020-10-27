@@ -11,15 +11,18 @@ import os
 import pathlib
 import json
 import glob
-import numpy as np
+from pathlib import Path
+from tqdm import tqdm
 
-import torch
-import librosa
+import torchaudio
 import torch.utils.data as data
 from torchvision import transforms
 from sklearn.preprocessing import LabelEncoder
 
-from typing import Tuple, Optional, List, Union, Iterable, Dict
+from typing import Any, Mapping, Tuple, Optional, List, Iterable, Dict
+
+
+torchaudio.set_audio_backend("sox_io")
 
 
 class NSynth(data.Dataset):
@@ -39,30 +42,30 @@ class NSynth(data.Dataset):
             Each field value will be encoding as an integer using sklearn
             LabelEncoder.
     """
-    def __init__(self, audio_directory_paths: Union[Iterable[str], str],
-                 json_data_path: str,
+    def __init__(self,
+                 audio_directory_paths: Iterable[Path],
+                 json_data_path: Path,
                  transform=None,
                  target_transform=None,
                  blacklist_pattern=[],
                  categorical_field_list=["instrument_family"],
                  valid_pitch_range: Optional[Tuple[int, int]] = None,
                  squeeze_mono_channel: bool = True,
-                 return_full_metadata: bool = True,
-                 label_encode_categorical_data: bool = True):
+                 return_full_metadata: bool = False,
+                 label_encode_categorical_data: bool = True,
+                 remove_qualities_str_from_full_metadata: bool = True
+                 ):
         """Constructor"""
         assert(isinstance(blacklist_pattern, list))
         assert(isinstance(categorical_field_list, list))
 
-        self.filenames: List[str] = []
-        # ensure audio_directory_paths is an iterable
-        try:
-            _ = audio_directory_paths[0]  # type: ignore
-        except TypeError:
-            audio_directory_paths = [audio_directory_paths]  # type: ignore
+        self.filenames: List[Path] = []
         for audio_directory_path in audio_directory_paths:
-            self.filenames.extend(sorted(
-                glob.glob(os.path.join(audio_directory_path, "*.wav"))
-            ))
+            self.filenames.extend([
+                Path(path) for path in sorted(
+                    glob.glob(os.path.join(audio_directory_path, "*.wav")))
+                ]
+            )
         with open(json_data_path, "r") as f:
             self.json_data = json.load(f)
 
@@ -92,20 +95,15 @@ class NSynth(data.Dataset):
 
         self.squeeze_mono_channel = squeeze_mono_channel
         self.transform = transform or transforms.Lambda(lambda x: x)
-        # self.convert_to_float = convert_to_float
-        # if self.convert_to_float:
-        #     # audio samples are loaded as an int16 numpy array
-        #     # rescale intensity range as float [-1, 1]
-        #     toFloat = transforms.Lambda(lambda x: (
-        #         x / np.iinfo(np.int16).max))
-        #     self.transform = transforms.Compose([toFloat,
-        #                                          self.transform])
         self.target_transform = target_transform
         self.return_full_metadata = return_full_metadata
+        self.remove_qualities_str_from_full_metadata = (
+            remove_qualities_str_from_full_metadata)
 
-    def blacklist(self, filenames, json_data, pattern):
+    def blacklist(self, filenames: Iterable[Path],
+                  json_data: Mapping[str, Any], pattern: str):
         filenames = [filename for filename in filenames
-                     if pattern not in filename]
+                     if pattern not in str(filename)]
         json_data = {
             key: value for key, value in json_data.items()
             if pattern not in key
@@ -119,16 +117,16 @@ class NSynth(data.Dataset):
                           if pathlib.Path(filename).stem in valid_filenames
                           ]
 
-    def _get_metadata(self, filename: str) -> int:
-        note_str = pathlib.Path(filename).stem
+    def _get_metadata(self, filename: Path) -> Dict[str, Any]:
+        note_str = filename.stem
         return self.json_data[note_str]
 
     def _filter_pitches_(self):
         valid_pitches_filenames = []
         valid_pitches_json_data = {}
-        for filename in self.filenames:
+        for filename in tqdm(self.filenames):
             metadata = self._get_metadata(filename)
-            pitch = metadata['pitch']
+            pitch = int(metadata['pitch'])
             if (self.valid_pitch_range[0] <= pitch <= self.valid_pitch_range[1]):
                 valid_pitches_filenames.append(filename)
                 valid_pitches_json_data[metadata['note_str']] = metadata
@@ -145,10 +143,9 @@ class NSynth(data.Dataset):
             tuple: (audio sample, *categorical targets, json_data)
         """
         name = self.filenames[index]
-        sample, sample_rate = librosa.load(name, sr=16000, mono=True)
-        sample = torch.as_tensor(sample)
-        if not self.squeeze_mono_channel:
-            sample = sample.unsqueeze(0)
+        sample, sample_rate = torchaudio.load(str(name))
+        if self.squeeze_mono_channel:
+            sample = sample.squeeze(0)
 
         metadata = self._get_metadata(name)
         if self.label_encode_categorical_data:
@@ -167,6 +164,10 @@ class NSynth(data.Dataset):
             sample = sample.squeeze(0)
 
         if self.return_full_metadata:
+            if self.remove_qualities_str_from_full_metadata:
+                # remove 'qualities_str' info since it has variable duration
+                # and is therefore not compatible with batching
+                metadata.pop('qualities_str', None)
             return [sample, *categorical_target, metadata]
         else:
             return [sample, *categorical_target]
