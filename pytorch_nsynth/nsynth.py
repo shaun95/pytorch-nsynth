@@ -50,6 +50,7 @@ class NSynth(data.Dataset):
                  blacklist_pattern=[],
                  categorical_field_list=["instrument_family"],
                  valid_pitch_range: Optional[Tuple[int, int]] = None,
+                 valid_pitch_classes: Optional[List[int]] = None,
                  squeeze_mono_channel: bool = True,
                  return_full_metadata: bool = False,
                  label_encode_categorical_data: bool = True,
@@ -75,7 +76,8 @@ class NSynth(data.Dataset):
 
         # filter-out invalid pitches
         self.valid_pitch_range = valid_pitch_range
-        if self.valid_pitch_range is not None:
+        self.valid_pitch_classes = valid_pitch_classes
+        if self.valid_pitch_range is not None or self.valid_pitch_classes is not None:
             print("Filter out invalid pitches")
             self.filenames, self.json_data = self._filter_pitches_()
 
@@ -124,10 +126,20 @@ class NSynth(data.Dataset):
     def _filter_pitches_(self):
         valid_pitches_filenames = []
         valid_pitches_json_data = {}
+
+        def is_valid_pitch(pitch):
+            if self.valid_pitch_range is not None:
+                if not (self.valid_pitch_range[0] <= pitch <= self.valid_pitch_range[1]):
+                    return False
+            if self.valid_pitch_classes is not None:
+                if (pitch % 12) not in self.valid_pitch_classes:
+                    return False
+            return True
+
         for filename in tqdm(self.filenames):
             metadata = self._get_metadata(filename)
             pitch = int(metadata['pitch'])
-            if (self.valid_pitch_range[0] <= pitch <= self.valid_pitch_range[1]):
+            if is_valid_pitch(pitch):
                 valid_pitches_filenames.append(filename)
                 valid_pitches_json_data[metadata['note_str']] = metadata
         return valid_pitches_filenames, valid_pitches_json_data
