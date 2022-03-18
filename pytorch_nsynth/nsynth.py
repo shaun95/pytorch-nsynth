@@ -25,6 +25,98 @@ from typing import Any, Mapping, Tuple, Optional, List, Iterable, Dict
 torchaudio.set_audio_backend("sox_io")
 
 
+class SSynthDataset(data.Dataset):
+    def __init__(self,
+                 audio_directory_paths: Iterable[Path],
+                 transform=None,
+                 target_transform=None,
+                 blacklist_pattern=[],
+                 categorical_field_list=["pitch"],
+                 valid_pitch_range: Optional[Tuple[int, int]] = None,
+                 valid_pitch_classes: Optional[List[int]] = None,
+                 squeeze_mono_channel: bool = True,
+                 resampling_fs_hz: Optional[Tuple[int, int]] = None,
+                 return_full_metadata: bool = False,
+                 label_encode_categorical_data: bool = True,
+                 remove_qualities_str_from_full_metadata: bool = True
+                 ):
+        """Constructor"""
+        self.filenames: List[Path] = []
+        for audio_directory_path in audio_directory_paths:
+            self.filenames.extend([
+                Path(path) for path in sorted(
+                    audio_directory_path.glob("**/*.wav"))
+                ]
+            )
+
+        # filter-out invalid pitches
+        self.valid_pitch_range = valid_pitch_range
+        self.valid_pitch_classes = valid_pitch_classes
+        if self.valid_pitch_range is not None or self.valid_pitch_classes is not None:
+            print("Filter out invalid pitches")
+            self.filenames = self._filter_pitches_()
+
+        self.squeeze_mono_channel = squeeze_mono_channel
+        self.resample = None
+        if resampling_fs_hz is not None:
+            self.resample = torchaudio.transforms.Resample(resampling_fs_hz[0],
+                                                           resampling_fs_hz[1])
+        self.transform = transform or transforms.Lambda(lambda x: x)
+        self.target_transform = target_transform
+
+    def __len__(self):
+        return len(self.filenames)
+
+    def _filter_pitches_(self):
+        valid_pitches_filenames = []
+
+        def is_valid_pitch(pitch):
+            if self.valid_pitch_range is not None:
+                if not (self.valid_pitch_range[0] <= pitch <= self.valid_pitch_range[1]):
+                    return False
+            if self.valid_pitch_classes is not None:
+                if (pitch % 12) not in self.valid_pitch_classes:
+                    return False
+            return True
+
+        for filename in tqdm(self.filenames):
+            metadata = self._get_metadata(filename)
+            pitch = int(metadata['pitch'])
+            if is_valid_pitch(pitch):
+                valid_pitches_filenames.append(filename)
+        return valid_pitches_filenames
+
+    def __getitem__(self, index):
+        """
+        Args:
+            index (int): Index
+        Returns:
+            tuple: (audio sample, *categorical targets, json_data)
+        """
+        name = self.filenames[index]
+        sample, sample_rate = torchaudio.load(str(name))
+        if self.squeeze_mono_channel:
+            sample = sample.squeeze(0)
+        if self.resample is not None:
+            sample = self.resample(sample)
+
+        metadata = self._get_metadata(name)
+
+        if self.transform is not None:
+            sample = self.transform(sample)
+        if self.target_transform is not None:
+            metadata = self.target_transform(metadata)
+        if sample.ndim == 4:
+            sample = sample.squeeze(0)
+
+        return [sample, metadata]
+
+    def _get_metadata(self, filename: Path) -> Dict[str, Any]:
+        note_str = filename.stem
+        pitch = int(note_str.split('_', 1)[0])
+        return {'pitch': pitch}
+
+
 class NSynth(data.Dataset):
     """Pytorch dataset for NSynth dataset
     args:
