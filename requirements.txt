@@ -1,0 +1,6 @@
+torchaudio
+pytorch
+torchvision
+scikit-learn
+numpy
+pathlib
